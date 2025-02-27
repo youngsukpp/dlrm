@@ -5,6 +5,7 @@ import pickle
 import sys
 import os
 from abc import *
+from collections import defaultdict
 
 class WeightSharingTranslator():
     def __init__(
@@ -84,7 +85,7 @@ class WeightSharingTranslator():
     def get_QR_entry(self, vec_size, table_idx, vec_idx):
         return vec_idx // self.collision, vec_idx % self.collision
 
-    def get_TT_Rec_entry(self, vec_size, table_idx, vec_idx):
+    def get_TT_Rec_entry(self, vec_size, table_idx, vec_idx, reorder=False):
         elements = vec_size // 4
         core_dims, core_entries_per_table = self.core_info
         cores_entries = core_entries_per_table[table_idx]
@@ -95,7 +96,18 @@ class WeightSharingTranslator():
             c = vec_idx // math.pow(cores_entries, 2) * core_dims[2] + i // (core_dims[0] * core_dims[1])
             access.append((a,b,c))
 
-        return access
+        if reorder:
+            # Group by (first, second) elements
+            grouped_access = defaultdict(list)
+            for tup in access:
+                key = (tup[0], tup[1])
+                grouped_access[key].append(tup)
+
+            # Flatten the grouped dictionary back into a reordered list
+            reordered_access = [tup for key in sorted(grouped_access.keys()) for tup in grouped_access[key]]
+            return reordered_access        
+        else:
+            return access
 
     def profile_QR_hots(self, space_reduct_ratio=0):
 
@@ -346,11 +358,11 @@ class WeightSharingTranslator():
         i = 0
         while y1 * y2 * y3 < N:
             if i==0:
-                y1 += 2
+                y3 += 2
             elif i==1:
                 y2 += 2
             else:
-                y3 += 2
+                y1 += 2
 
             i = (i+1)%3
 
@@ -372,6 +384,7 @@ class ProactivePIMTranslation():
         using_subtable_mapping=False,
         using_gemv_dist=True,
         pim_level="bankgroup",
+        cmp_ch_only=False,
         tt_rank=0,
         addr_map={},
         mapper_name="ProactivePIM"
@@ -387,6 +400,7 @@ class ProactivePIMTranslation():
         self.tt_rank = tt_rank
         self.pim_level = pim_level
         self.using_gemv_dist = using_gemv_dist
+        self.cmp_ch_only = cmp_ch_only
 
         self.addr_map = addr_map
         self.using_prefetch = using_prefetch
@@ -500,7 +514,7 @@ class ProactivePIMTranslation():
                 table_addr_HBM.append(HBM_accumulation)
                 HBM_accumulation += space_per_table_HBM[i]
 
-
+        print("Emb table size: ", sum(space_per_table_HBM)*self.tt_rank/1024/1024/1024, "GB")
         print("HBM occupied: ", HBM_accumulation/1024/1024/1024, "GB")
 
         return table_addr_HBM
@@ -566,6 +580,16 @@ class ProactivePIMTranslation():
         new_target_addr = self.merge_address(target_parsed)
         return new_target_addr, already_same_chbg
 
+    def compare_channel(self, addr1, addr2):
+        # Parse the addresses
+        parsed_addr1 = self.parse_address(addr1)
+        parsed_addr2 = self.parse_address(addr2)
+
+        # Compare channel and bankgroup
+        same_channel = parsed_addr1["channel"] == parsed_addr2["channel"]
+
+        return not same_channel
+
     def compare_channel_and_bankgroup(self, addr1, addr2):
         # Parse the addresses
         parsed_addr1 = self.parse_address(addr1)
@@ -601,7 +625,11 @@ class ProactivePIMTranslation():
             if self.using_subtable_mapping:
                 r_physical_addr, _ = self.map_to_same_node(self.pim_level, q_physical_addr, r_physical_addr)
             else:
-                need_transfer_to_other_node = self.compare_channel_and_bankgroup(q_physical_addr, r_physical_addr)
+                need_transfer_to_other_node = False
+                if self.cmp_ch_only:
+                    need_transfer_to_other_node = self.compare_channel(q_physical_addr, r_physical_addr)
+                else:
+                    need_transfer_to_other_node = self.compare_channel_and_bankgroup(q_physical_addr, r_physical_addr)
                 if need_transfer_to_other_node:
                     r_command = "RDWR"
             
@@ -629,39 +657,70 @@ class ProactivePIMTranslation():
 
             return (q_physical_addr, r_physical_addr), ("RD", r_command)
         
-        elif self.is_TT_Rec:
-            access = self.ws_translator.get_TT_Rec_entry(self.vec_size, table_idx, vec_idx)
+        elif self.is_TT_Rec:  
+            access = self.ws_translator.get_TT_Rec_entry(self.vec_size, table_idx, vec_idx, reorder=self.using_gemv_dist)
             total_physical_addr = []
+            prev_a = 0
+            prev_b = 0
             for a, b, c in access:
                 if self.using_gemv_dist:
+                    # sample 3 vectors out of total tt_rank vectors to avoid enormous trace file
                     for k in range(3):
                         rank = k*3
+                        # efficient computing using intermediate result reuse    
+                        first_c_command = None
+                        second_c_command = None    
                         first_c_logical_addr = np.sum(self.first_size_per_table[:table_idx]) + a * self.tt_rank * 4
-                        third_c_logical_addr = np.sum(self.third_size_per_table[:table_idx]) + c * self.tt_rank * 4
+                        # distributing second_c_logical_addr across bankgroup
                         table_logical_addr = self.table_addr_HBM[table_idx + rank*len(self.embedding_profiles)]
                         second_c_logical_addr = rank * table_logical_addr + b * self.tt_rank * 4
-                        # distributing second_c_logical_addr across bankgroup
                         # second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4
 
                         # using direct mapping
-                        first_c_physical_addr, second_c_physical_addr, third_c_physical_addr = int(first_c_logical_addr), int(second_c_logical_addr), int(third_c_logical_addr)
+                        first_c_physical_addr, second_c_physical_addr = int(first_c_logical_addr), int(second_c_logical_addr)
 
-                        first_c_command = "RD"
+                        use_intermediate_result = (a == prev_a and b == prev_b)
+                        if not use_intermediate_result:
+                            first_c_command = "RD"
+                            second_c_command = "RD"
+                            if self.using_subtable_mapping:
+                                first_c_logical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, first_c_physical_addr)
+                                if self.using_prefetch:
+                                    first_c_command = "RDD"
+                            else:
+                                need_transfer_to_other_node_1st = False
+                                if self.cmp_ch_only:
+                                    need_transfer_to_other_node_1st = self.compare_channel(second_c_physical_addr, first_c_physical_addr)
+                                else:
+                                    need_transfer_to_other_node_1st = self.compare_channel_and_bankgroup(second_c_physical_addr, first_c_physical_addr)
+                                if need_transfer_to_other_node_1st:
+                                    first_c_command = "RDWR"
+
+                        third_c_logical_addr = np.sum(self.third_size_per_table[:table_idx]) + c * self.tt_rank * 4
+                        third_c_physical_addr = int(third_c_logical_addr)
                         third_c_command = "RD"
                         if self.using_subtable_mapping:
-                            first_c_logical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, first_c_physical_addr)
                             third_c_logical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, third_c_physical_addr)
                         else:
-                            need_transfer_to_other_node_1st = self.compare_channel_and_bankgroup(second_c_physical_addr, first_c_physical_addr)
-                            need_transfer_to_other_node_3rd = self.compare_channel_and_bankgroup(second_c_physical_addr, third_c_physical_addr)
-                            if need_transfer_to_other_node_1st:
-                                first_c_command = "RDWR"
-                            if need_transfer_to_other_node_3rd:
-                                third_c_command = "RDWR"
+                            need_transfer_to_other_node_3rd = False
+                            if not use_intermediate_result:
+                                if self.cmp_ch_only:
+                                    need_transfer_to_other_node_3rd = self.compare_channel(second_c_physical_addr, third_c_physical_addr)
+                                else:
+                                    need_transfer_to_other_node_3rd = self.compare_channel_and_bankgroup(second_c_physical_addr, third_c_physical_addr)
+                                if need_transfer_to_other_node_3rd:
+                                    third_c_command = "RDWR"
 
-                        if self.using_prefetch:
-                            first_c_command = "RDD"
-
+                        if use_intermediate_result:
+                            first_c_command = None
+                            second_c_command = None
+                            first_c_physical_addr = -1
+                            second_c_physical_addr = -1
+    
+                        total_physical_addr.append(((first_c_physical_addr, second_c_physical_addr, third_c_physical_addr), (first_c_command, second_c_command, third_c_command)))
+                    
+                    prev_a = a
+                    prev_b = b
                     # # check for locality
                     # if self.mapper_name == "ProactivePIM":
                     #     # stored inside DIMM
@@ -683,7 +742,6 @@ class ProactivePIMTranslation():
                     #     if self.is_TT_hot(table_idx, c, False, True, False) and random.randint(1, 100) <= 45:
                     #         thrid_c_physical_addr = -1
 
-                        total_physical_addr.append(((first_c_physical_addr, second_c_physical_addr, third_c_physical_addr), (first_c_command, "RD", third_c_command)))
                 else:
                     table_logical_addr = self.table_addr_HBM[table_idx]
                     first_c_logical_addr = np.sum(self.first_size_per_table[:table_idx]) + a * self.tt_rank * 4
@@ -696,8 +754,17 @@ class ProactivePIMTranslation():
                         first_c_logical_addr, _ = self.map_to_same_node(self.pim_level, int(second_c_logical_addr), first_c_logical_addr)
                         third_c_logical_addr, _ = self.map_to_same_node(self.pim_level, int(second_c_logical_addr), third_c_logical_addr)
                     else:
-                        need_transfer_to_other_node_1st = self.compare_channel_and_bankgroup(second_c_logical_addr, first_c_logical_addr)
-                        need_transfer_to_other_node_3rd = self.compare_channel_and_bankgroup(second_c_logical_addr, third_c_logical_addr)
+                        need_transfer_to_other_node_1st = False
+                        need_transfer_to_other_node_3rd = False
+                        if self.cmp_ch_only:
+                            need_transfer_to_other_node_1st = self.compare_channel(second_c_logical_addr, first_c_logical_addr)
+                        else:
+                            need_transfer_to_other_node_1st = self.compare_channel_and_bankgroup(second_c_logical_addr, first_c_logical_addr)
+                        
+                        if self.cmp_ch_only:
+                            need_transfer_to_other_node_3rd = self.compare_channel(second_c_logical_addr, third_c_logical_addr)
+                        else:
+                            need_transfer_to_other_node_3rd = self.compare_channel_and_bankgroup(second_c_logical_addr, third_c_logical_addr)
                         if need_transfer_to_other_node_1st:
                             first_c_command = "RDWR"
                         if need_transfer_to_other_node_3rd:
