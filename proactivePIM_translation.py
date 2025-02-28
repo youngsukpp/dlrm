@@ -106,6 +106,7 @@ class WeightSharingTranslator():
 
             # Flatten the grouped dictionary back into a reordered list
             reordered_access = [tup for key in sorted(grouped_access.keys()) for tup in grouped_access[key]]
+            print(reordered_access)
             return reordered_access        
         else:
             return access
@@ -666,24 +667,35 @@ class ProactivePIMTranslation():
             for a, b, c in access:
                 if self.using_gemv_dist:
                     # sample 3 vectors out of total tt_rank vectors to avoid enormous trace file
+                    # efficient computing using intermediate result reuse    
                     use_intermediate_result = (a == prev_a and b == prev_b)
+                    first_c_command = None
+                    second_c_command = None    
+                    third_c_command = "RD"
+                    first_c_logical_addr = np.sum(self.first_size_per_table[:table_idx]) + a * self.tt_rank * 4
+                    third_c_logical_addr = np.sum(self.third_size_per_table[:table_idx]) + c * self.tt_rank * 4
+                    first_c_physical_addr, third_c_physical_addr = int(first_c_physical_addr), int(third_c_logical_addr)
+                    second_c_physical_addr = None
+
+                    if not use_intermediate_result:
+                        first_c_command = "RD"
+                        second_c_command = "RD"
+                    else:
+                        first_c_command = None
+                        second_c_command = None
+                        first_c_physical_addr = -1
+                        second_c_physical_addr = -1
+
+                    # sample 3 vectors out of total tt_rank vectors to avoid enormous trace file
                     for k in range(3):
                         rank = k*3
-                        # efficient computing using intermediate result reuse    
-                        first_c_command = None
-                        second_c_command = None    
-                        first_c_logical_addr = np.sum(self.first_size_per_table[:table_idx]) + a * self.tt_rank * 4
                         # distributing second_c_logical_addr across bankgroup
+                        # using direct mapping
                         table_logical_addr = self.table_addr_HBM[table_idx + rank*len(self.embedding_profiles)]
                         second_c_logical_addr = rank * table_logical_addr + b * self.tt_rank * 4
-                        # second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4
-
-                        # using direct mapping
-                        first_c_physical_addr, second_c_physical_addr = int(first_c_logical_addr), int(second_c_logical_addr)
+                        second_c_physical_addr = int(second_c_logical_addr)
 
                         if not use_intermediate_result:
-                            first_c_command = "RD"
-                            second_c_command = "RD"
                             if self.using_subtable_mapping:
                                 first_c_logical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, first_c_physical_addr)
                                 if self.using_prefetch:
@@ -697,9 +709,6 @@ class ProactivePIMTranslation():
                                 if need_transfer_to_other_node_1st:
                                     first_c_command = "RDWR"
 
-                        third_c_logical_addr = np.sum(self.third_size_per_table[:table_idx]) + c * self.tt_rank * 4
-                        third_c_physical_addr = int(third_c_logical_addr)
-                        third_c_command = "RD"
                         if self.using_subtable_mapping:
                             third_c_logical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, third_c_physical_addr)
                         else:
@@ -712,11 +721,6 @@ class ProactivePIMTranslation():
                                 if need_transfer_to_other_node_3rd:
                                     third_c_command = "RDWR"
 
-                        if use_intermediate_result:
-                            first_c_command = None
-                            second_c_command = None
-                            first_c_physical_addr = -1
-                            second_c_physical_addr = -1
     
     
                         # check for locality

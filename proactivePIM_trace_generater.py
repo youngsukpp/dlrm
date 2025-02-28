@@ -164,7 +164,7 @@ def write_trace_file(
     tt_delay = math.ceil((tt_rank*tt_rank + tt_rank) / (0.98 * math.pow(10,12)) * vec_size / HBM_clk_delay)
 
     multi_hot = Multihot(
-                    multi_hot_sizes=[20 for i in range(len(embedding_profiles))],
+                    multi_hot_sizes=[10 for i in range(len(embedding_profiles))],
                     num_embeddings_per_feature=[len(table) for table in embedding_profiles],
                     batch_size=1,
                     collect_freqs_stats=False,
@@ -206,8 +206,9 @@ def write_trace_file(
                 batch_data = np.transpose(batch_data)
                 multi_hot_indices = multi_hot.make_new_batch(lS_i=batch_data, batch_size=batch_size)
                 multi_hot_indices = np.transpose(multi_hot_indices)
+                # print(multi_hot_indices.shape)
 
-                if i % 10 == 0:
+                if i % 2 == 0:
                     print(f"{i}/{total_batch} trace processed")
                 if i > total_batch:
                     break
@@ -291,9 +292,10 @@ def write_trace_file(
                             elif is_TT_Rec:
                                 total_access = addr_mapper.physical_translation(table, emb)
                                 device = "HBM"
-                                
-                                if random.randint(0, 10) > 6:
-                                    cache.flush()
+
+                                if cpu_baseline:
+                                    if random.randint(0, 10) > 6:
+                                        cache.flush()
                                 
                                 for (a, b, c), (first_cmd, second_cmd, third_cmd) in total_access:
                                     if cpu_baseline:
@@ -513,7 +515,7 @@ if __name__ == "__main__":
                 embedding_profiles=embedding_profiles,
                 train_data=train_data,
                 dataset=dataset,
-                total_trace=40,
+                total_trace=20,
                 collisions=collision,
                 tt_rank=tt_rank,
                 vec_size=vec_size,
