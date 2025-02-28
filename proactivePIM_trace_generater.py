@@ -30,6 +30,7 @@ class Command(str, Enum):
     Transfer = "TR",
     Prefetch = "PR",
     Compute_Delay = "DL"
+    Read_DIMM = "RD_DIMM"
 
 class EmbTableProfiler:
 
@@ -163,7 +164,7 @@ def write_trace_file(
     tt_delay = math.ceil((tt_rank*tt_rank + tt_rank) / (0.98 * math.pow(10,12)) * vec_size / HBM_clk_delay)
 
     multi_hot = Multihot(
-                    multi_hot_sizes=[80 for i in range(len(embedding_profiles))],
+                    multi_hot_sizes=[20 for i in range(len(embedding_profiles))],
                     num_embeddings_per_feature=[len(table) for table in embedding_profiles],
                     batch_size=1,
                     collect_freqs_stats=False,
@@ -271,8 +272,11 @@ def write_trace_file(
                                             total_emb_bursts = leftovers
 
                                 else:
-                                    write_trace_line(wf, device, q_addr, q_cmd, total_burst)     
-                                    load_per_bg[get_bg_id(q_addr)] += 1                           
+                                    if q_cmd == Command.RD_DIMM:
+                                        write_trace_line(wf, "DIMM", q, Command.Read, total_burst)
+                                    else:
+                                        write_trace_line(wf, device, q_addr, q_cmd, total_burst)     
+                                        load_per_bg[get_bg_id(q_addr)] += 1                           
                                     if not using_prefetch:
                                         if using_subtable_mapping:
                                             write_trace_line(wf, device, r_addr, r_cmd, total_burst)
@@ -282,6 +286,7 @@ def write_trace_file(
                                                 total_data_move += 1
                                             else:
                                                 write_trace_line(wf, device, r_addr, r_cmd, total_burst)
+
 
                             elif is_TT_Rec:
                                 total_access = addr_mapper.physical_translation(table, emb)
@@ -332,6 +337,7 @@ def write_trace_file(
                                     else:
                                         if not using_prefetch:
                                             if using_subtable_mapping:
+                                                # using intermediate result of a and b
                                                 if not (a == -1):
                                                     write_trace_line(wf, device, a, first_cmd, tt_rec_burst)
                                                 write_trace_line(wf, device, c, third_cmd, tt_rec_burst)
@@ -352,7 +358,10 @@ def write_trace_file(
                                         # GEMV distribution of 2nd table mapping -> use tt_rec_burst than tt_rec_burst_pow_2
                                         if not (b == -1):
                                             write_trace_line(wf, device, b, Command.Read, tt_rec_burst)
-                                            load_per_bg[get_bg_id(b)] += 1                           
+                                            load_per_bg[get_bg_id(b)] += 1     
+                                        else:
+                                            if second_c_command == Command.RD_DIMM:
+                                                write_trace_line(wf, "DIMM", b, Command.Read, tt_rec_burst)
 
                             else: 
                                 total_burst = vec_size // default_vec_size
@@ -504,7 +513,7 @@ if __name__ == "__main__":
                 embedding_profiles=embedding_profiles,
                 train_data=train_data,
                 dataset=dataset,
-                total_trace=150,
+                total_trace=40,
                 collisions=collision,
                 tt_rank=tt_rank,
                 vec_size=vec_size,

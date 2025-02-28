@@ -37,7 +37,8 @@ class WeightSharingTranslator():
         self.qr_hot_vec = None
         if not tt_rank == 0:
             self.qr_hot_vec = self.profile_QR_hots()
-        # self.tt_hot_vec = self.profile_TT_hots()
+        else:
+            self.tt_hot_vec = self.profile_TT_hots()
         if space_reduct_ratio > 0 :
             self.qr_hot_vec_space = self.profile_QR_hots(space_reduct_ratio)
             # self.tt_hot_vec_space = self.profile_TT_hots(notRecNMP, space_reduct_ratio)
@@ -665,6 +666,7 @@ class ProactivePIMTranslation():
             for a, b, c in access:
                 if self.using_gemv_dist:
                     # sample 3 vectors out of total tt_rank vectors to avoid enormous trace file
+                    use_intermediate_result = (a == prev_a and b == prev_b)
                     for k in range(3):
                         rank = k*3
                         # efficient computing using intermediate result reuse    
@@ -679,7 +681,6 @@ class ProactivePIMTranslation():
                         # using direct mapping
                         first_c_physical_addr, second_c_physical_addr = int(first_c_logical_addr), int(second_c_logical_addr)
 
-                        use_intermediate_result = (a == prev_a and b == prev_b)
                         if not use_intermediate_result:
                             first_c_command = "RD"
                             second_c_command = "RD"
@@ -717,30 +718,35 @@ class ProactivePIMTranslation():
                             first_c_physical_addr = -1
                             second_c_physical_addr = -1
     
+    
+                        # check for locality
+                        if self.mapper_name == "ProactivePIM":
+                            # stored inside DIMM
+                            if not self.is_TT_hot(table_idx, b, False, True, False):
+                                second_c_command = "RD_DIMM"
+                                second_c_physical_addr = -1
+                        elif self.mapper_name == "SPACE":
+                            # stored inside DIMM
+                            if not self.is_TT_hot(table_idx, b, False, True, False):
+                                second_c_command = "RD_DIMM"
+                                second_c_physical_addr = -1
+                            # reduction locality
+                        elif self.mapper_name == "RecNMP":
+                            # stored inside cache (45% value from cache evaulation result in RecNMP paper)
+                            if self.is_TT_hot(table_idx, b, False, True, False) and random.randint(1, 100) <= 45:
+                                second_c_command = "RD_DIMM"
+                                second_c_physical_addr = -1
+
+    
+    
                         total_physical_addr.append(((first_c_physical_addr, second_c_physical_addr, third_c_physical_addr), (first_c_command, second_c_command, third_c_command)))
                     
                     prev_a = a
                     prev_b = b
-                    # # check for locality
-                    # if self.mapper_name == "ProactivePIM":
-                    #     # stored inside DIMM
-                    #     if not self.is_TT_hot(table_idx, b, False, True, False):
-                    #         second_c_physical_addr = -1
-                    # elif self.mapper_name == "SPACE":
-                    #     # stored inside DIMM
-                    #     if not self.is_TT_hot(table_idx, b, False, True, False):
-                    #         second_c_physical_addr = -1
-                    #     # reduction locality
-                    #     if self.is_TT_hot(table_idx, b, False, True, False, is_SPACE_reduct=True):
-                    #         second_c_physical_addr = -1
-                    # elif self.mapper_name == "RecNMP":
-                    #     # stored inside cache (45% value from cache evaulation result in RecNMP paper)
-                    #     if self.is_TT_hot(table_idx, a, False, True, False) and random.randint(1, 100) <= 45:
-                    #         first_c_physical_addr = -1
-                    #     if self.is_TT_hot(table_idx, b, False, True, False) and random.randint(1, 100) <= 45:
-                    #         second_c_physical_addr = -1
-                    #     if self.is_TT_hot(table_idx, c, False, True, False) and random.randint(1, 100) <= 45:
-                    #         thrid_c_physical_addr = -1
+
+                        # if self.is_TT_hot(table_idx, b, False, True, False, is_SPACE_reduct=True):
+                        #     second_c_physical_addr = -1
+
 
                 else:
                     table_logical_addr = self.table_addr_HBM[table_idx]
