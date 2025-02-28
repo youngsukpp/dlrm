@@ -272,7 +272,7 @@ def write_trace_file(
                                             total_emb_bursts = leftovers
 
                                 else:
-                                    if q_cmd == Command.RD_DIMM:
+                                    if q_cmd == Command.Read_DIMM:
                                         write_trace_line(wf, "DIMM", q, Command.Read, total_burst)
                                     else:
                                         write_trace_line(wf, device, q_addr, q_cmd, total_burst)     
@@ -360,7 +360,7 @@ def write_trace_file(
                                             write_trace_line(wf, device, b, Command.Read, tt_rec_burst)
                                             load_per_bg[get_bg_id(b)] += 1     
                                         else:
-                                            if second_c_command == Command.RD_DIMM:
+                                            if second_cmd == Command.Read_DIMM:
                                                 write_trace_line(wf, "DIMM", b, Command.Read, tt_rec_burst)
 
                             else: 
