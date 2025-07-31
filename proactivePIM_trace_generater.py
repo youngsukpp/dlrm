@@ -82,7 +82,7 @@ def load_criteo_train_data(path='./savedata/', dataset='kaggle'):
                 "total",
                 "train",
                 "./input/train.txt",
-                "./input/kaggleAdDisplayChallenge_processed.npz",
+                "./share_st/kaggle/input/kaggleAdDisplayChallenge_processed.npz",
                 False,
                 False
             )
@@ -116,8 +116,8 @@ def get_bg_id(addr:int):
     
     return bg_id
 
-def write_trace_line(wf, device:str, physical_addr:int, command:Command, total_burst:int):
-    wf.write(f"{device} {command.value} {physical_addr} {int(total_burst)} \n")
+def write_trace_line(wf, device:str, physical_addr:int, command:str, total_burst:int):
+    wf.write(f"{device} {command} {physical_addr} {int(total_burst)} \n")
 
 def data_move(wf, device:str, addr_mapper:ProactivePIMTranslation, addr:int, cmp_addr:int, pim_level:str, burst:int):
     write_trace_line(wf, device, addr, Command.Read, burst)
@@ -140,7 +140,8 @@ def write_trace_file(
         all_prefetch=False,
         using_subtable_mapping=True,
         addr_mappers=[],
-        pim_level="bankgroup"
+        pim_level="bankgroup",
+        using_skinny_gemm=False
     ):
 
     print("Generating traces for DRAMsim3")
@@ -294,8 +295,7 @@ def write_trace_file(
                                 device = "HBM"
 
                                 if cpu_baseline:
-                                    if random.randint(0, 10) > 6:
-                                        cache.flush()
+                                    cache.flush()
                                 
                                 for (a, b, c), (first_cmd, second_cmd, third_cmd) in total_access:
                                     if cpu_baseline:
@@ -314,16 +314,16 @@ def write_trace_file(
                                                 total_emb_bursts += tt_rec_burst
                                          
                                         # sample 3 vectors out of total tt_rank vectors to avoid enormous trace file
-                                        write_idx = random.sample(range(tt_rec_burst_pow_2), tt_rec_burst * 3)
+                                        # write_idx = random.sample(range(tt_rec_burst_pow_2), tt_rec_burst * 3)
                                         for m in range(tt_rec_burst_pow_2):
                                             b_addr = b + 64*m
                                             b_hit = cache.access(b_addr, 'emb')
                                             if not b_hit:
                                                 total_emb_bursts += tt_rec_burst
-                                                if m in write_idx:
-                                                    write_trace_line(wf, device, b_addr, Command.Read, 1)    
+                                                # if m in write_idx:
+                                                write_trace_line(wf, device, b_addr, Command.Read, 1)    
                                         
-                                        write_trace_line(wf, device, 0, Command.Compute_Delay, tt_delay)    
+                                        # write_trace_line(wf, device, 0, Command.Compute_Delay, tt_delay)    
                                         
                                         # concurrent access to MLP if cpu_baseline flag is set (to mimic cache conflict behavior)
                                         if mlp_load_count < mlp_bursts:
@@ -337,33 +337,39 @@ def write_trace_file(
                                                 total_emb_bursts = leftovers
                                                 
                                     else:
-                                        if not using_prefetch:
+                                        if using_skinny_gemm:
+                                            if not (a == -1):
+                                                write_trace_line(wf, device, a, first_cmd, tt_rec_burst)
+                                            if not (b == -1):
+                                                write_trace_line(wf, device, b, Command.Read, tt_rec_burst)
+                                            if not (c == -1):
+                                                write_trace_line(wf, device, c, third_cmd, tt_rec_burst)
+                                        else:
                                             if using_subtable_mapping:
                                                 # using intermediate result of a and b
                                                 if not (a == -1):
                                                     write_trace_line(wf, device, a, first_cmd, tt_rec_burst)
                                                 write_trace_line(wf, device, c, third_cmd, tt_rec_burst)
                                             else:
-                                                if not (a == -1):
-                                                    if first_cmd == Command.Move:
-                                                        total_data_move += 1
-                                                        data_move(wf, device, addr_mapper, a, b, pim_level, tt_rec_burst)
-                                                    else:
-                                                        write_trace_line(wf, device, a, Command.Read, tt_rec_burst)
+                                                if first_cmd == Command.Move:
+                                                    total_data_move += 1
+                                                    data_move(wf, device, addr_mapper, a, b, pim_level, tt_rec_burst)
+                                                else:
+                                                    write_trace_line(wf, device, a, Command.Read, tt_rec_burst)
 
                                                 if third_cmd == Command.Move:
                                                     total_data_move += 1
                                                     data_move(wf, device, addr_mapper, c, b, pim_level, tt_rec_burst)
                                                 else:
                                                     write_trace_line(wf, device, c, Command.Read, tt_rec_burst)
-                                        
-                                        # GEMV distribution of 2nd table mapping -> use tt_rec_burst than tt_rec_burst_pow_2
-                                        if not (b == -1):
-                                            write_trace_line(wf, device, b, Command.Read, tt_rec_burst)
-                                            load_per_bg[get_bg_id(b)] += 1     
-                                        else:
-                                            if second_cmd == Command.Read_DIMM:
-                                                write_trace_line(wf, "DIMM", b, Command.Read, tt_rec_burst)
+
+                                                write_trace_line(wf, device, b, Command.Read, tt_rec_burst_pow_2)
+
+
+                                            # # if not (b == -1):
+                                            # else:
+                                            #     if second_cmd == Command.Read_DIMM:
+                                            #         write_trace_line(wf, "DIMM", b, Command.Read, tt_rec_burst)
 
                             else: 
                                 total_burst = vec_size // default_vec_size
@@ -376,8 +382,8 @@ def write_trace_file(
             print("total_data_move : ", total_data_move)
             print("cache hit rate : ", cache.overall_hit_rate())
             print("emb hit rate : ", cache.category_hit_rate('emb'))
-            if not cpu_baseline:
-                print("bg loads : ", np.array(load_per_bg)/np.min(load_per_bg))            
+            # if not cpu_baseline:
+            #     print("bg loads : ", np.array(load_per_bg)/np.min(load_per_bg))            
 
 def addrmap_generator(
         mapper_name='ProactivePIM',
@@ -389,7 +395,7 @@ def addrmap_generator(
         tt_rank=16, 
         using_prefetch=False, 
         using_mapping=False, 
-        using_gemv_dist=False,
+        using_skinny_gemm=False,
         pim_level='bankgroup', 
         cmp_ch_only=False,
     ):
@@ -423,7 +429,7 @@ def addrmap_generator(
                     tt_rank=tt_rank, 
                     using_prefetch=using_prefetch,
                     using_subtable_mapping=using_mapping,
-                    using_gemv_dist=using_gemv_dist,
+                    using_skinny_gemm=using_skinny_gemm,
                     addr_map=addr_map,
                     pim_level=pim_level,
                     cmp_ch_only=cmp_ch_only,
@@ -501,7 +507,7 @@ if __name__ == "__main__":
                                     tt_rank=tt_rank, 
                                     using_prefetch=using_prefetch, 
                                     using_mapping=using_subtable_mapping, 
-                                    using_gemv_dist=(not cpu_baseline),
+                                    using_skinny_gemm=((not cpu_baseline) and using_subtable_mapping),
                                     pim_level="bankgroup",
                                     cmp_ch_only=data_move_channel_only
                                 )
@@ -515,7 +521,7 @@ if __name__ == "__main__":
                 embedding_profiles=embedding_profiles,
                 train_data=train_data,
                 dataset=dataset,
-                total_trace=20,
+                total_trace=100,
                 collisions=collision,
                 tt_rank=tt_rank,
                 vec_size=vec_size,
@@ -526,5 +532,6 @@ if __name__ == "__main__":
                 addr_mappers=addr_mappers,
                 cpu_baseline=cpu_baseline,
                 cache=cache,
-                pim_level=pim_level
+                pim_level=pim_level,
+                using_skinny_gemm=((not cpu_baseline) and using_subtable_mapping)
             )

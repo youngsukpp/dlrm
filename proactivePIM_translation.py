@@ -34,11 +34,12 @@ class WeightSharingTranslator():
 
         self.Q_entries_per_table, self.R_entries_per_table = self.preprocess_QR()
         self.core_info = self.preprocess_TT_Rec()
+        print(self.core_info)
         self.qr_hot_vec = None
-        if not tt_rank == 0:
-            self.qr_hot_vec = self.profile_QR_hots()
-        else:
-            self.tt_hot_vec = self.profile_TT_hots()
+        # if  tt_rank == 0:
+        #     self.qr_hot_vec = self.profile_QR_hots()
+        # else:
+        #     self.tt_hot_vec = self.profile_TT_hots()
         if space_reduct_ratio > 0 :
             self.qr_hot_vec_space = self.profile_QR_hots(space_reduct_ratio)
             # self.tt_hot_vec_space = self.profile_TT_hots(notRecNMP, space_reduct_ratio)
@@ -98,15 +99,15 @@ class WeightSharingTranslator():
             access.append((a,b,c))
 
         if reorder:
-            # Group by (first, second) elements
+            # Group by (second) elements
             grouped_access = defaultdict(list)
             for tup in access:
-                key = (tup[0], tup[1])
+                key = tup[1]
                 grouped_access[key].append(tup)
 
             # Flatten the grouped dictionary back into a reordered list
             reordered_access = [tup for key in sorted(grouped_access.keys()) for tup in grouped_access[key]]
-            print(reordered_access)
+            # print(reordered_access)
             return reordered_access        
         else:
             return access
@@ -207,7 +208,7 @@ class WeightSharingTranslator():
 
         for table_id in range(table_len):
             for vec_id in range(len(self.embedding_profiles[table_id])):
-                if vec_id % 100 == 0:
+                if vec_id % 5000 == 0:
                     print(vec_id, " / ", len(self.embedding_profiles[table_id]))
                 access_per_vec = self.get_TT_Rec_entry(self.vec_size, table_id, vec_id)
                 counted = 0
@@ -216,7 +217,7 @@ class WeightSharingTranslator():
                     tt_profile[table_id][0][int(a)] += self.embedding_profiles[table_id][vec_id]
                     tt_profile[table_id][1][int(b)] += self.embedding_profiles[table_id][vec_id]
                     tt_profile[table_id][2][int(c)] += self.embedding_profiles[table_id][vec_id]
-                    total_access[table_id] += 3 * elf.embedding_profiles[table_id][vec_id]
+                    total_access[table_id] += 3 * self.embedding_profiles[table_id][vec_id]
                     counted += 1
                     if counted == 2:
                         break
@@ -384,7 +385,7 @@ class ProactivePIMTranslation():
         is_TT_Rec=False,
         using_prefetch=False,
         using_subtable_mapping=False,
-        using_gemv_dist=True,
+        using_skinny_gemm=True,
         pim_level="bankgroup",
         cmp_ch_only=False,
         tt_rank=0,
@@ -401,7 +402,7 @@ class ProactivePIMTranslation():
         self.collisions = collisions
         self.tt_rank = tt_rank
         self.pim_level = pim_level
-        self.using_gemv_dist = using_gemv_dist
+        self.using_skinny_gemm = using_skinny_gemm
         self.cmp_ch_only = cmp_ch_only
 
         self.addr_map = addr_map
@@ -484,10 +485,10 @@ class ProactivePIMTranslation():
         if self.is_QR:
             space_per_table_HBM = [(self.ws_translator.get_QR_size(i, vec_size, True)) for i in range(len(embedding_profiles))]
         elif self.is_TT_Rec:
-            if self.using_gemv_dist:
-                space_per_table_HBM = [(self.ws_translator.get_TT_Rec_size(i, vec_size, False, True, False))/self.tt_rank for i in range(len(embedding_profiles))]
-            else:
-                space_per_table_HBM = [(self.ws_translator.get_TT_Rec_size(i, vec_size, False, True, False)) for i in range(len(embedding_profiles))]
+            # if self.using_gemv_dist:
+            #     space_per_table_HBM = [(self.ws_translator.get_TT_Rec_size(i, vec_size, False, True, False))/self.tt_rank for i in range(len(embedding_profiles))]
+            # else:
+            space_per_table_HBM = [(self.ws_translator.get_TT_Rec_size(i, vec_size, False, True, False)) for i in range(len(embedding_profiles))]
         else:        
             space_per_table_HBM = [(len(embedding_profiles[i]) * vec_size) for i in range(len(embedding_profiles))]
 
@@ -495,16 +496,17 @@ class ProactivePIMTranslation():
         HBM_accumulation = 0 
         HBM_accumulation += self.reserved_page
         if self.is_TT_Rec:
-            if self.using_gemv_dist:
-                empty_space = self.HBM_Size - np.sum(space_per_table_HBM) * self.tt_rank
-                for i in range(len(space_per_table_HBM) * self.tt_rank):
-                    table_addr_HBM.append(HBM_accumulation)
-                    HBM_accumulation += space_per_table_HBM[i%len(space_per_table_HBM)] + empty_space/(len(space_per_table_HBM) * self.tt_rank)
-            else:
-                empty_space = self.HBM_Size - np.sum(space_per_table_HBM)
-                for i in range(len(space_per_table_HBM)):
-                    table_addr_HBM.append(HBM_accumulation)
-                    HBM_accumulation += space_per_table_HBM[i] + empty_space/len(space_per_table_HBM)
+            # if self.using_gemv_dist:
+            #     empty_space = self.HBM_Size - np.sum(space_per_table_HBM) * self.tt_rank
+            #     for i in range(len(space_per_table_HBM) * self.tt_rank):
+            #         table_addr_HBM.append(HBM_accumulation)
+            #         HBM_accumulation += space_per_table_HBM[i%len(space_per_table_HBM)] + empty_space/(len(space_per_table_HBM) * self.tt_rank)
+            # else:
+            empty_space = self.HBM_Size - np.sum(space_per_table_HBM)
+            self.empty_space_within_table = empty_space / len(embedding_profiles)
+            for i in range(len(space_per_table_HBM)):
+                table_addr_HBM.append(HBM_accumulation)
+                HBM_accumulation += space_per_table_HBM[i] + self.empty_space_within_table
         elif self.is_QR:
             empty_space = self.HBM_Size - np.sum(space_per_table_HBM)
             for i in range(len(space_per_table_HBM)):
@@ -660,75 +662,60 @@ class ProactivePIMTranslation():
             return (q_physical_addr, r_physical_addr), ("RD", r_command)
         
         elif self.is_TT_Rec:  
-            access = self.ws_translator.get_TT_Rec_entry(self.vec_size, table_idx, vec_idx, reorder=self.using_gemv_dist)
+            access = self.ws_translator.get_TT_Rec_entry(self.vec_size, table_idx, vec_idx, reorder=self.using_skinny_gemm)
             total_physical_addr = []
-            prev_a = 0
-            prev_b = 0
+            first_subembeddings = []
+            third_subembeddings = []
+            prev_b = -1
+            _, cores_entries_per_table = self.ws_translator.core_info
+            cores_entries = cores_entries_per_table[table_idx]
+
             for a, b, c in access:
-                if self.using_gemv_dist:
-                    # sample 3 vectors out of total tt_rank vectors to avoid enormous trace file
-                    # efficient computing using intermediate result reuse    
-                    use_intermediate_result = (a == prev_a and b == prev_b)
-                    first_c_command = None
+                if self.using_skinny_gemm: # submap + reorder, table prefetch
+                    use_intermediate_result = (b == prev_b and self.using_prefetch)
                     second_c_command = None    
+                    first_c_command = "RD"
                     third_c_command = "RD"
                     first_c_logical_addr = np.sum(self.first_size_per_table[:table_idx]) + a * self.tt_rank * 4
                     third_c_logical_addr = np.sum(self.third_size_per_table[:table_idx]) + c * self.tt_rank * 4
-                    first_c_physical_addr, third_c_physical_addr = int(first_c_physical_addr), int(third_c_logical_addr)
-                    second_c_physical_addr = None
+                    first_c_physical_addr, third_c_physical_addr = int(first_c_logical_addr), int(third_c_logical_addr)
+                    table_logical_addr = self.table_addr_HBM[table_idx]
+                    second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4 + b * (self.empty_space_within_table/cores_entries)
+                    second_c_physical_addr = int(second_c_logical_addr)
 
-                    if not use_intermediate_result:
-                        first_c_command = "RD"
-                        second_c_command = "RD"
+                    first_c_physical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, first_c_physical_addr)
+                    third_c_physical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, third_c_physical_addr)
+
+                    if a not in first_subembeddings:
+                        first_subembeddings.append(first_c_physical_addr)
+                    if c not in third_subembeddings:
+                        third_subembeddings.append(third_c_physical_addr)
+
+                    if use_intermediate_result:
+                        continue
                     else:
-                        first_c_command = None
-                        second_c_command = None
-                        first_c_physical_addr = -1
-                        second_c_physical_addr = -1
+                        if len(first_subembeddings) > 0:
+                            if not self.using_prefetch:
+                                for first_c_physical_addr in first_subembeddings:
+                                    total_physical_addr.append(((first_c_physical_addr, -1, -1), ("RD", None, None)))
 
-                    # sample 3 vectors out of total tt_rank vectors to avoid enormous trace file
-                    for k in range(3):
-                        rank = k*3
-                        # distributing second_c_logical_addr across bankgroup
-                        # using direct mapping
-                        table_logical_addr = self.table_addr_HBM[table_idx + rank*len(self.embedding_profiles)]
-                        second_c_logical_addr = rank * table_logical_addr + b * self.tt_rank * 4
-                        second_c_physical_addr = int(second_c_logical_addr)
+                            for third_c_physical_addr in third_subembeddings:
+                               total_physical_addr.append(((-1, -1, third_c_physical_addr), (None, None, "RD")))
 
-                        if not use_intermediate_result:
-                            if self.using_subtable_mapping:
-                                first_c_logical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, first_c_physical_addr)
-                                if self.using_prefetch:
-                                    first_c_command = "RDD"
-                            else:
-                                need_transfer_to_other_node_1st = False
-                                if self.cmp_ch_only:
-                                    need_transfer_to_other_node_1st = self.compare_channel(second_c_physical_addr, first_c_physical_addr)
-                                else:
-                                    need_transfer_to_other_node_1st = self.compare_channel_and_bankgroup(second_c_physical_addr, first_c_physical_addr)
-                                if need_transfer_to_other_node_1st:
-                                    first_c_command = "RDWR"
+                    for k in range(self.tt_rank):
+                        rank = k
+                        second_c_logical_addr_per_vec = rank * self.tt_rank * 4 + second_c_logical_addr
+                        second_c_physical_addr = int(second_c_logical_addr_per_vec)
 
-                        if self.using_subtable_mapping:
-                            third_c_logical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, third_c_physical_addr)
-                        else:
-                            need_transfer_to_other_node_3rd = False
-                            if not use_intermediate_result:
-                                if self.cmp_ch_only:
-                                    need_transfer_to_other_node_3rd = self.compare_channel(second_c_physical_addr, third_c_physical_addr)
-                                else:
-                                    need_transfer_to_other_node_3rd = self.compare_channel_and_bankgroup(second_c_physical_addr, third_c_physical_addr)
-                                if need_transfer_to_other_node_3rd:
-                                    third_c_command = "RDWR"
-
-    
-    
                         # check for locality
                         if self.mapper_name == "ProactivePIM":
                             # stored inside DIMM
+                            print("DIMM LOAD!")
+
                             if not self.is_TT_hot(table_idx, b, False, True, False):
                                 second_c_command = "RD_DIMM"
                                 second_c_physical_addr = -1
+                                sys.exit()
                         elif self.mapper_name == "SPACE":
                             # stored inside DIMM
                             if not self.is_TT_hot(table_idx, b, False, True, False):
@@ -740,23 +727,17 @@ class ProactivePIMTranslation():
                             if self.is_TT_hot(table_idx, b, False, True, False) and random.randint(1, 100) <= 45:
                                 second_c_command = "RD_DIMM"
                                 second_c_physical_addr = -1
-
     
-    
-                        total_physical_addr.append(((first_c_physical_addr, second_c_physical_addr, third_c_physical_addr), (first_c_command, second_c_command, third_c_command)))
+                        total_physical_addr.append(((-1, second_c_physical_addr, -1), (None, second_c_command, None)))
                     
-                    prev_a = a
                     prev_b = b
-
-                        # if self.is_TT_hot(table_idx, b, False, True, False, is_SPACE_reduct=True):
-                        #     second_c_physical_addr = -1
-
 
                 else:
                     table_logical_addr = self.table_addr_HBM[table_idx]
                     first_c_logical_addr = np.sum(self.first_size_per_table[:table_idx]) + a * self.tt_rank * 4
                     third_c_logical_addr = np.sum(self.third_size_per_table[:table_idx]) + c * self.tt_rank * 4
-                    second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4
+                    # second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4
+                    second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4 + b * (self.empty_space_within_table/cores_entries)
 
                     first_c_command = "RD"
                     third_c_command = "RD"
@@ -766,22 +747,22 @@ class ProactivePIMTranslation():
                     else:
                         need_transfer_to_other_node_1st = False
                         need_transfer_to_other_node_3rd = False
-                        if self.cmp_ch_only:
-                            need_transfer_to_other_node_1st = self.compare_channel(second_c_logical_addr, first_c_logical_addr)
-                        else:
-                            need_transfer_to_other_node_1st = self.compare_channel_and_bankgroup(second_c_logical_addr, first_c_logical_addr)
+                        # if self.cmp_ch_only:
+                        #     need_transfer_to_other_node_1st = self.compare_channel(second_c_logical_addr, first_c_logical_addr)
+                        # else:
+                        #     need_transfer_to_other_node_1st = self.compare_channel_and_bankgroup(second_c_logical_addr, first_c_logical_addr)
                         
-                        if self.cmp_ch_only:
-                            need_transfer_to_other_node_3rd = self.compare_channel(second_c_logical_addr, third_c_logical_addr)
-                        else:
-                            need_transfer_to_other_node_3rd = self.compare_channel_and_bankgroup(second_c_logical_addr, third_c_logical_addr)
-                        if need_transfer_to_other_node_1st:
-                            first_c_command = "RDWR"
-                        if need_transfer_to_other_node_3rd:
-                            third_c_command = "RDWR"
+                        # if self.cmp_ch_only:
+                        #     need_transfer_to_other_node_3rd = self.compare_channel(second_c_logical_addr, third_c_logical_addr)
+                        # else:
+                        #     need_transfer_to_other_node_3rd = self.compare_channel_and_bankgroup(second_c_logical_addr, third_c_logical_addr)
+                        # if need_transfer_to_other_node_1st:
+                        #     first_c_command = "RDWR"
+                        # if need_transfer_to_other_node_3rd:
+                        #     third_c_command = "RDWR"
 
-                    if self.using_prefetch:
-                        first_c_command = "RDD"
+                    # if self.using_prefetch:
+                    #     first_c_command = "RDD"                    
 
                     first_c_vpn, second_c_vpn, third_c_vpn = int(first_c_logical_addr // self.page_offset), int(second_c_logical_addr // self.page_offset), int(third_c_logical_addr // self.page_offset)
                     first_c_ppn, second_c_ppn, third_c_ppn = first_c_vpn, second_c_vpn, third_c_vpn
