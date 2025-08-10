@@ -154,7 +154,7 @@ def write_trace_file(
     default_vec_size = 64
     total_burst = vec_size // default_vec_size
     tt_rec_burst = tt_rank * 4 // default_vec_size
-    tt_rec_burst_pow_2 = tt_rank * tt_rank * 4 * 4 // default_vec_size
+    tt_rec_burst_pow_2 = tt_rank * tt_rank * 4 // default_vec_size
     total_data = len(train_data)
     mlp_arch = 13 * 512 * 256 * 64 * 16 # approximately 6GB
     mlp_bursts = mlp_arch * 4 / 64
@@ -172,7 +172,7 @@ def write_trace_file(
                     dist_type='pareto',
                     dataset=dataset
                 )
-
+    print(addr_mappers)
     for addr_mapper in addr_mappers:
         mapper_name = addr_mapper.mapper_name()
         using_prefetch = all_prefetch or table_prefetch and "ProactivePIM" in mapper_name
@@ -255,6 +255,7 @@ def write_trace_file(
                                         if not q_hit:
                                             write_trace_line(wf, device, tmp_addr, Command.Read, 1)    
                                             total_emb_bursts += 1                   
+
                                     for m in range(total_burst):
                                         tmp_addr = r_addr + 64*m
                                         r_hit = cache.access(tmp_addr, 'emb')
@@ -263,15 +264,15 @@ def write_trace_file(
                                             total_emb_bursts += 1
 
                                     # concurrent access to MLP if cpu_baseline flag is set (to mimic cache conflict behavior)
-                                    if mlp_load_count < mlp_bursts:
-                                        total_mlp_load = total_emb_bursts // HBM_DIMM2_bw_ratio
-                                        leftovers = total_emb_bursts % HBM_DIMM2_bw_ratio
-                                        if total_mlp_load > 0:
-                                            for k in range(total_mlp_load):
-                                                addr = random.randint(mlp_start_addr, mlp_end_addr)
-                                                cache.access(addr, 'mlp')
-                                                mlp_load_count += 1
-                                            total_emb_bursts = leftovers
+                                    # if mlp_load_count < mlp_bursts:
+                                    #     total_mlp_load = total_emb_bursts // HBM_DIMM2_bw_ratio
+                                    #     leftovers = total_emb_bursts % HBM_DIMM2_bw_ratio
+                                    #     if total_mlp_load > 0:
+                                    #         for k in range(total_mlp_load):
+                                    #             addr = random.randint(mlp_start_addr, mlp_end_addr)
+                                    #             cache.access(addr, 'mlp')
+                                    #             mlp_load_count += 1
+                                    #         total_emb_bursts = leftovers
 
                                 else:
                                     if q_cmd == Command.Read_DIMM:
@@ -320,21 +321,20 @@ def write_trace_file(
                                             b_hit = cache.access(b_addr, 'emb')
                                             if not b_hit:
                                                 total_emb_bursts += tt_rec_burst
-                                                # if m in write_idx:
-                                                write_trace_line(wf, device, b_addr, Command.Read, 1)    
+                                                write_trace_line(wf, device, b_addr, Command.Read, 1)
                                         
                                         # write_trace_line(wf, device, 0, Command.Compute_Delay, tt_delay)    
                                         
-                                        # concurrent access to MLP if cpu_baseline flag is set (to mimic cache conflict behavior)
-                                        if mlp_load_count < mlp_bursts:
-                                            total_mlp_load = total_emb_bursts // HBM_DIMM2_bw_ratio
-                                            leftovers = total_emb_bursts % HBM_DIMM2_bw_ratio
-                                            if total_mlp_load > 0:
-                                                for k in range(total_mlp_load):
-                                                    mlp_addr = mlp_start_addr + mlp_load_count
-                                                    cache.access(mlp_addr, 'mlp')
-                                                    mlp_load_count += 1
-                                                total_emb_bursts = leftovers
+                                        # # concurrent access to MLP if cpu_baseline flag is set (to mimic cache conflict behavior)
+                                        # if mlp_load_count < mlp_bursts:
+                                        #     total_mlp_load = total_emb_bursts // HBM_DIMM2_bw_ratio
+                                        #     leftovers = total_emb_bursts % HBM_DIMM2_bw_ratio
+                                        #     if total_mlp_load > 0:
+                                        #         for k in range(total_mlp_load):
+                                        #             mlp_addr = mlp_start_addr + mlp_load_count
+                                        #             cache.access(mlp_addr, 'mlp')
+                                        #             mlp_load_count += 1
+                                        #         total_emb_bursts = leftovers
                                                 
                                     else:
                                         if using_skinny_gemm:
@@ -345,10 +345,14 @@ def write_trace_file(
                                             if not (c == -1):
                                                 write_trace_line(wf, device, c, third_cmd, tt_rec_burst)
                                         else:
+                                            # print("writing normal and submap")
+
                                             if using_subtable_mapping:
                                                 # using intermediate result of a and b
-                                                if not (a == -1):
-                                                    write_trace_line(wf, device, a, first_cmd, tt_rec_burst)
+                                                write_trace_line(wf, device, a, first_cmd, tt_rec_burst)
+                                                for m in range(tt_rank):
+                                                    b_addr = b + 64*m
+                                                    write_trace_line(wf, device, b_addr, Command.Read, tt_rec_burst)
                                                 write_trace_line(wf, device, c, third_cmd, tt_rec_burst)
                                             else:
                                                 if first_cmd == Command.Move:
@@ -363,7 +367,12 @@ def write_trace_file(
                                                 else:
                                                     write_trace_line(wf, device, c, Command.Read, tt_rec_burst)
 
-                                                write_trace_line(wf, device, b, Command.Read, tt_rec_burst_pow_2)
+                                                # write_trace_line(wf, device, b, Command.Read, tt_rec_burst_pow_2)
+
+                                                for m in range(tt_rank):
+                                                    b_addr = b + 64*m
+                                                    write_trace_line(wf, device, b_addr, Command.Read, tt_rec_burst)
+
 
 
                                             # # if not (b == -1):
@@ -418,8 +427,7 @@ def addrmap_generator(
                     mapper_name=mapper_name+"_QR"
                 )
         )
-
-    if tt_rec:
+    elif tt_rec:
         addr_mappers.append(
                 ProactivePIMTranslation(
                     embedding_profiles=embedding_profiles, 
@@ -436,6 +444,19 @@ def addrmap_generator(
                     mapper_name=mapper_name+"_TT"
                 )
         )
+    else:
+        addr_mappers.append(
+                ProactivePIMTranslation(
+                    embedding_profiles=embedding_profiles, 
+                    vec_size=vec_size, 
+                    HBM_size_gb=4, 
+                    addr_map=addr_map,
+                    pim_level=pim_level,
+                    cmp_ch_only=cmp_ch_only,
+                    mapper_name=mapper_name+"_normal"
+                )
+        )
+
 
     return addr_mappers
 
@@ -507,7 +528,7 @@ if __name__ == "__main__":
                                     tt_rank=tt_rank, 
                                     using_prefetch=using_prefetch, 
                                     using_mapping=using_subtable_mapping, 
-                                    using_skinny_gemm=((not cpu_baseline) and using_subtable_mapping),
+                                    using_skinny_gemm=((not cpu_baseline) and table_prefetch),
                                     pim_level="bankgroup",
                                     cmp_ch_only=data_move_channel_only
                                 )
@@ -521,7 +542,7 @@ if __name__ == "__main__":
                 embedding_profiles=embedding_profiles,
                 train_data=train_data,
                 dataset=dataset,
-                total_trace=100,
+                total_trace=1000,
                 collisions=collision,
                 tt_rank=tt_rank,
                 vec_size=vec_size,
@@ -533,5 +554,5 @@ if __name__ == "__main__":
                 cpu_baseline=cpu_baseline,
                 cache=cache,
                 pim_level=pim_level,
-                using_skinny_gemm=((not cpu_baseline) and using_subtable_mapping)
+                using_skinny_gemm=((not cpu_baseline) and table_prefetch)
             )

@@ -686,18 +686,18 @@ class ProactivePIMTranslation():
                     first_c_physical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, first_c_physical_addr)
                     third_c_physical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, third_c_physical_addr)
 
-                    if a not in first_subembeddings:
+                    if first_c_physical_addr not in first_subembeddings:
                         first_subembeddings.append(first_c_physical_addr)
-                    if c not in third_subembeddings:
+                    if third_c_physical_addr not in third_subembeddings:
                         third_subembeddings.append(third_c_physical_addr)
 
                     if use_intermediate_result:
                         continue
                     else:
                         if len(first_subembeddings) > 0:
-                            if not self.using_prefetch:
-                                for first_c_physical_addr in first_subembeddings:
-                                    total_physical_addr.append(((first_c_physical_addr, -1, -1), ("RD", None, None)))
+                            # if not self.using_prefetch:
+                            for first_c_physical_addr in first_subembeddings:
+                                total_physical_addr.append(((first_c_physical_addr, -1, -1), ("RD", None, None)))
 
                             for third_c_physical_addr in third_subembeddings:
                                total_physical_addr.append(((-1, -1, third_c_physical_addr), (None, None, "RD")))
@@ -711,7 +711,6 @@ class ProactivePIMTranslation():
                         if self.mapper_name == "ProactivePIM":
                             # stored inside DIMM
                             print("DIMM LOAD!")
-
                             if not self.is_TT_hot(table_idx, b, False, True, False):
                                 second_c_command = "RD_DIMM"
                                 second_c_physical_addr = -1
@@ -738,7 +737,6 @@ class ProactivePIMTranslation():
                     third_c_logical_addr = np.sum(self.third_size_per_table[:table_idx]) + c * self.tt_rank * 4
                     # second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4
                     second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4 + b * (self.empty_space_within_table/cores_entries)
-
                     first_c_command = "RD"
                     third_c_command = "RD"
                     if self.using_subtable_mapping:
@@ -747,27 +745,28 @@ class ProactivePIMTranslation():
                     else:
                         need_transfer_to_other_node_1st = False
                         need_transfer_to_other_node_3rd = False
-                        # if self.cmp_ch_only:
-                        #     need_transfer_to_other_node_1st = self.compare_channel(second_c_logical_addr, first_c_logical_addr)
-                        # else:
-                        #     need_transfer_to_other_node_1st = self.compare_channel_and_bankgroup(second_c_logical_addr, first_c_logical_addr)
+                        if self.cmp_ch_only:
+                            need_transfer_to_other_node_1st = self.compare_channel(second_c_logical_addr, first_c_logical_addr)
+                        else:
+                            need_transfer_to_other_node_1st = self.compare_channel_and_bankgroup(second_c_logical_addr, first_c_logical_addr)
                         
-                        # if self.cmp_ch_only:
-                        #     need_transfer_to_other_node_3rd = self.compare_channel(second_c_logical_addr, third_c_logical_addr)
-                        # else:
-                        #     need_transfer_to_other_node_3rd = self.compare_channel_and_bankgroup(second_c_logical_addr, third_c_logical_addr)
-                        # if need_transfer_to_other_node_1st:
-                        #     first_c_command = "RDWR"
-                        # if need_transfer_to_other_node_3rd:
-                        #     third_c_command = "RDWR"
+                        if self.cmp_ch_only:
+                            need_transfer_to_other_node_3rd = self.compare_channel(second_c_logical_addr, third_c_logical_addr)
+                        else:
+                            need_transfer_to_other_node_3rd = self.compare_channel_and_bankgroup(second_c_logical_addr, third_c_logical_addr)
+                        if need_transfer_to_other_node_1st:
+                            first_c_command = "RDWR"
+                        if need_transfer_to_other_node_3rd:
+                            third_c_command = "RDWR"
 
                     # if self.using_prefetch:
                     #     first_c_command = "RDD"                    
 
-                    first_c_vpn, second_c_vpn, third_c_vpn = int(first_c_logical_addr // self.page_offset), int(second_c_logical_addr // self.page_offset), int(third_c_logical_addr // self.page_offset)
-                    first_c_ppn, second_c_ppn, third_c_ppn = first_c_vpn, second_c_vpn, third_c_vpn
-                    first_c_po_loc, second_c_po_loc, third_c_po_loc = first_c_logical_addr % self.page_offset, second_c_logical_addr % self.page_offset, third_c_logical_addr % self.page_offset                
-                    first_c_physical_addr, second_c_physical_addr, third_c_physical_addr = int(first_c_ppn*self.page_offset + first_c_po_loc), int(second_c_ppn*self.page_offset + second_c_ppn), int(third_c_ppn*self.page_offset + third_c_po_loc)
+                    first_c_physical_addr, second_c_physical_addr, third_c_physical_addr = int(first_c_logical_addr), int(second_c_logical_addr), int(third_c_logical_addr)
+                    # first_c_vpn, second_c_vpn, third_c_vpn = int(first_c_logical_addr // self.page_offset), int(second_c_logical_addr // self.page_offset), int(third_c_logical_addr // self.page_offset)
+                    # first_c_ppn, second_c_ppn, third_c_ppn = first_c_vpn, second_c_vpn, third_c_vpn
+                    # first_c_po_loc, second_c_po_loc, third_c_po_loc = first_c_logical_addr % self.page_offset, second_c_logical_addr % self.page_offset, third_c_logical_addr % self.page_offset                
+                    # first_c_physical_addr, second_c_physical_addr, third_c_physical_addr = int(first_c_ppn*self.page_offset + first_c_po_loc), int(second_c_ppn*self.page_offset + second_c_ppn), int(third_c_ppn*self.page_offset + third_c_po_loc)
                     total_physical_addr.append(((first_c_physical_addr, second_c_physical_addr, third_c_physical_addr), (first_c_command, "RD", third_c_command)))
 
             return total_physical_addr
