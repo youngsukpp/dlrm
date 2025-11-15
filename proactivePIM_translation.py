@@ -34,7 +34,6 @@ class WeightSharingTranslator():
 
         self.Q_entries_per_table, self.R_entries_per_table = self.preprocess_QR()
         self.core_info = self.preprocess_TT_Rec()
-        print(self.core_info)
         self.qr_hot_vec = None
         # if  tt_rank == 0:
         #     self.qr_hot_vec = self.profile_QR_hots()
@@ -485,9 +484,6 @@ class ProactivePIMTranslation():
         if self.is_QR:
             space_per_table_HBM = [(self.ws_translator.get_QR_size(i, vec_size, True)) for i in range(len(embedding_profiles))]
         elif self.is_TT_Rec:
-            # if self.using_gemv_dist:
-            #     space_per_table_HBM = [(self.ws_translator.get_TT_Rec_size(i, vec_size, False, True, False))/self.tt_rank for i in range(len(embedding_profiles))]
-            # else:
             space_per_table_HBM = [(self.ws_translator.get_TT_Rec_size(i, vec_size, False, True, False)) for i in range(len(embedding_profiles))]
         else:        
             space_per_table_HBM = [(len(embedding_profiles[i]) * vec_size) for i in range(len(embedding_profiles))]
@@ -496,12 +492,6 @@ class ProactivePIMTranslation():
         HBM_accumulation = 0 
         HBM_accumulation += self.reserved_page
         if self.is_TT_Rec:
-            # if self.using_gemv_dist:
-            #     empty_space = self.HBM_Size - np.sum(space_per_table_HBM) * self.tt_rank
-            #     for i in range(len(space_per_table_HBM) * self.tt_rank):
-            #         table_addr_HBM.append(HBM_accumulation)
-            #         HBM_accumulation += space_per_table_HBM[i%len(space_per_table_HBM)] + empty_space/(len(space_per_table_HBM) * self.tt_rank)
-            # else:
             empty_space = self.HBM_Size - np.sum(space_per_table_HBM)
             self.empty_space_within_table = empty_space / len(embedding_profiles)
             for i in range(len(space_per_table_HBM)):
@@ -518,8 +508,8 @@ class ProactivePIMTranslation():
                 table_addr_HBM.append(HBM_accumulation)
                 HBM_accumulation += space_per_table_HBM[i]
 
-        print("Emb table size: ", sum(space_per_table_HBM)*self.tt_rank/1024/1024/1024, "GB")
-        print("HBM occupied: ", HBM_accumulation/1024/1024/1024, "GB")
+        print("Emb table size: ", round(sum(space_per_table_HBM)/1024/1024/1024, 5), "GB")
+        print("HBM occupied: ", round(HBM_accumulation/1024/1024/1024, 5), "GB")
 
         return table_addr_HBM
 
@@ -672,7 +662,7 @@ class ProactivePIMTranslation():
 
             for a, b, c in access:
                 if self.using_skinny_gemm: # submap + reorder, table prefetch
-                    use_intermediate_result = (b == prev_b and self.using_prefetch)
+                    use_intermediate_result = (b == prev_b) # and self.using_prefetch)
                     second_c_command = None    
                     first_c_command = "RD"
                     third_c_command = "RD"
@@ -680,7 +670,15 @@ class ProactivePIMTranslation():
                     third_c_logical_addr = np.sum(self.third_size_per_table[:table_idx]) + c * self.tt_rank * 4
                     first_c_physical_addr, third_c_physical_addr = int(first_c_logical_addr), int(third_c_logical_addr)
                     table_logical_addr = self.table_addr_HBM[table_idx]
-                    second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4 + b * (self.empty_space_within_table/cores_entries)
+
+                    # tt rec uses channel, bankgroup, bank, column addrmap setting in DRAMsim3
+                    # for strict constraints, checking if the offest is smaller than the empty space within table / cores_entries is needed
+                    shift_bits = 6  # 64B burst offset
+                    bankgroup_interleave_size = math.pow(2, self.addr_map["column"] + shift_bits + self.addr_map["bank"]) * 64
+                    max_offset = self.empty_space_within_table / cores_entries if cores_entries > 0 else float('inf')
+                    offset = min(bankgroup_interleave_size, max_offset) if max_offset >= bankgroup_interleave_size else bankgroup_interleave_size
+
+                    second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4 + b * offset
                     second_c_physical_addr = int(second_c_logical_addr)
 
                     first_c_physical_addr, _ = self.map_to_same_node(self.pim_level, second_c_physical_addr, first_c_physical_addr)
@@ -695,47 +693,20 @@ class ProactivePIMTranslation():
                         continue
                     else:
                         if len(first_subembeddings) > 0:
-                            # if not self.using_prefetch:
-                            for first_c_physical_addr in first_subembeddings:
-                                total_physical_addr.append(((first_c_physical_addr, -1, -1), ("RD", None, None)))
+                            if not self.using_prefetch:
+                                for first_c_physical_addr in first_subembeddings:
+                                    total_physical_addr.append(((first_c_physical_addr, -1, -1), ("RD", None, None)))
 
                             for third_c_physical_addr in third_subembeddings:
                                total_physical_addr.append(((-1, -1, third_c_physical_addr), (None, None, "RD")))
 
-                    for k in range(self.tt_rank):
-                        rank = k
-                        second_c_logical_addr_per_vec = rank * self.tt_rank * 4 + second_c_logical_addr
-                        second_c_physical_addr = int(second_c_logical_addr_per_vec)
-
-                        # check for locality
-                        if self.mapper_name == "ProactivePIM":
-                            # stored inside DIMM
-                            print("DIMM LOAD!")
-                            if not self.is_TT_hot(table_idx, b, False, True, False):
-                                second_c_command = "RD_DIMM"
-                                second_c_physical_addr = -1
-                                sys.exit()
-                        elif self.mapper_name == "SPACE":
-                            # stored inside DIMM
-                            if not self.is_TT_hot(table_idx, b, False, True, False):
-                                second_c_command = "RD_DIMM"
-                                second_c_physical_addr = -1
-                            # reduction locality
-                        elif self.mapper_name == "RecNMP":
-                            # stored inside cache (45% value from cache evaulation result in RecNMP paper)
-                            if self.is_TT_hot(table_idx, b, False, True, False) and random.randint(1, 100) <= 45:
-                                second_c_command = "RD_DIMM"
-                                second_c_physical_addr = -1
-    
-                        total_physical_addr.append(((-1, second_c_physical_addr, -1), (None, second_c_command, None)))
-                    
+                    total_physical_addr.append(((-1, second_c_physical_addr, -1), (None, second_c_command, None)))
                     prev_b = b
 
                 else:
                     table_logical_addr = self.table_addr_HBM[table_idx]
                     first_c_logical_addr = np.sum(self.first_size_per_table[:table_idx]) + a * self.tt_rank * 4
                     third_c_logical_addr = np.sum(self.third_size_per_table[:table_idx]) + c * self.tt_rank * 4
-                    # second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4
                     second_c_logical_addr = table_logical_addr + b * self.tt_rank * self.tt_rank * 4 + b * (self.empty_space_within_table/cores_entries)
                     first_c_command = "RD"
                     third_c_command = "RD"
@@ -758,9 +729,6 @@ class ProactivePIMTranslation():
                             first_c_command = "RDWR"
                         if need_transfer_to_other_node_3rd:
                             third_c_command = "RDWR"
-
-                    # if self.using_prefetch:
-                    #     first_c_command = "RDD"                    
 
                     first_c_physical_addr, second_c_physical_addr, third_c_physical_addr = int(first_c_logical_addr), int(second_c_logical_addr), int(third_c_logical_addr)
                     # first_c_vpn, second_c_vpn, third_c_vpn = int(first_c_logical_addr // self.page_offset), int(second_c_logical_addr // self.page_offset), int(third_c_logical_addr // self.page_offset)

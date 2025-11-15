@@ -52,7 +52,10 @@ class Multihot:
         self.batch_size = batch_size
 
         self.multi_hot_tables_l = None
-        savefile = f"./savedata/multi_hot_table_{dataset}.pickle"
+        # 파일명을 압축: table 수와 multi_hot 수만 사용
+        num_tables = len(multi_hot_sizes)
+        multi_hot_value = multi_hot_sizes[0] if len(multi_hot_sizes) > 0 else 0
+        savefile = f"./savedata/multi_hot_table_{dataset}_{num_tables}tables_{multi_hot_value}multi.pickle"
         if not os.path.exists(savefile):
             print("generate multi_hot_tables")        
             # Generate 1-hot to multi-hot lookup tables, one lookup table per sparse embedding table.
@@ -114,12 +117,15 @@ class Multihot:
                     0, embs_count, size=(embs_count, multi_hot_size - 1)
                 )
             elif dist_type == "pareto":
-                synthetic_sparse_ids = (
-                    np.random.pareto(
-                        a=0.25, size=(embs_count, multi_hot_size - 1)
-                    ).astype(np.int32)
-                    % embs_count
+                synthetic_sparse_ids = np.random.randint(
+                    0, embs_count, size=(embs_count, multi_hot_size - 1), dtype=np.int32
                 )
+                # synthetic_sparse_ids = (
+                #     np.random.pareto(
+                #         a=0.25, size=(embs_count, multi_hot_size - 1)
+                #     ).astype(np.int32)
+                #     % embs_count
+                # )
             multi_hot_table = np.concatenate(
                 (embedding_ids, synthetic_sparse_ids), axis=-1
             )
@@ -163,11 +169,9 @@ class Multihot:
                 # print(sparse_data_batch_for_table)
                 # print(multi_hot_table.shape)
 
-            except:
-                print('----------------')
-                print(lS_i)
-                print(sparse_data_batch_for_table)
-                print(multi_hot_table.shape)
+            except Exception as e:
+                print(f"DEBUG: Total Tables {len(self.multi_hot_tables_l)}: , multi_hot_size={multi_hot_table.shape}, sparse_data_batch_for_table={sparse_data_batch_for_table}")
+                print(f'Error in multi_hot.make_new_batch for table {k}: {e}')
                 sys.exit()
             # print(multi_hot_ids)
             # print(multi_hot_ids.shape)
